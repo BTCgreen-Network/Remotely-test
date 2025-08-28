@@ -13,6 +13,7 @@ using System.Collections;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Reflection;
+using System.Linq;
 
 namespace Remotely.Server.Components.Devices;
 
@@ -33,6 +34,7 @@ public partial class DevicesFrame : AuthComponentBase
     private bool _hideOfflineDevices = true;
     private string _lastFilterState = string.Empty;
     private string? _selectedGroupId;
+    private string? _selectedMoveGroupId;
     private string _selectedSortProperty = "DeviceName";
     private ListSortDirection _sortDirection;
 
@@ -70,6 +72,9 @@ public partial class DevicesFrame : AuthComponentBase
     [Inject]
     private IToastService ToastService { get; init; } = null!;
 
+    [Inject]
+    private IJsInterop JsInterop { get; init; } = null!;
+
     private int TotalPages => (int)Math.Max(1, Math.Ceiling((decimal)_filteredDevices.Count / _devicesPerPage));
 
     public async Task Refresh()
@@ -102,6 +107,7 @@ public partial class DevicesFrame : AuthComponentBase
         _deviceGroups.AddRange(DataService.GetDeviceGroups(UserName));
 
         _selectedGroupId = _deviceGroupAll;
+        _selectedMoveGroupId = string.Empty;
 
         var sortableProperties = typeof(Device)
             .GetProperties()
@@ -388,8 +394,69 @@ public partial class DevicesFrame : AuthComponentBase
         else
         {
             ToastService.ShowToast2(
-                $"Failed to send wake commands.  Reason: {result.Reason}", 
+                $"Failed to send wake commands.  Reason: {result.Reason}",
                 ToastType.Error);
         }
+    }
+
+    private async Task CreateDeviceGroup()
+    {
+        EnsureUserSet();
+
+        var groupName = await JsInterop.Prompt("New device group name");
+        if (string.IsNullOrWhiteSpace(groupName))
+        {
+            return;
+        }
+
+        var result = await DataService.AddDeviceGroup(User.OrganizationID, new DeviceGroup { Name = groupName });
+
+        if (result.IsSuccess)
+        {
+            _deviceGroups.Add(result.Value);
+            ToastService.ShowToast2("Device group created.", ToastType.Success);
+        }
+        else
+        {
+            ToastService.ShowToast2($"Failed to create device group.  Reason: {result.Reason}", ToastType.Error);
+        }
+    }
+
+    private async Task MoveSelectedDevices()
+    {
+        EnsureUserSet();
+
+        var selected = CardStore.SelectedDevices.ToArray();
+        if (!selected.Any())
+        {
+            ToastService.ShowToast("No devices selected.");
+            return;
+        }
+
+        foreach (var deviceId in selected)
+        {
+            var device = _allDevices.FirstOrDefault(x => x.ID == deviceId);
+            if (device is null)
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(_selectedMoveGroupId))
+            {
+                await DataService.UpdateDevice(deviceId, device.Tags, device.Alias, null, device.Notes);
+            }
+            else
+            {
+                var result = await DataService.AddDeviceToGroup(deviceId, _selectedMoveGroupId);
+                if (!result.IsSuccess)
+                {
+                    ToastService.ShowToast2($"Failed to move device {device.DeviceName}.  Reason: {result.Reason}", ToastType.Error);
+                    return;
+                }
+            }
+        }
+
+        await Refresh();
+        ToastService.ShowToast("Devices moved.");
     }
 }
